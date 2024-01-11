@@ -1,1 +1,1 @@
-test
+import qpsolvers as qp
