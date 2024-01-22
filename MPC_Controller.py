@@ -68,7 +68,76 @@ def determine_maximal_invariant_set(poly_kappa_f, a_closed_loop):
         inv_prev = inv_next
     return inv_next
 
+
+
 ## Impliment and test controller.
+
+def mpc_control(x_current, P, Q, R, A, B, G, h, x_min, x_max, N):
+    """
+    MPC control algorithm.
+
+    :param x_current: Current state of the system.
+    :param P, Q, R: Weight matrices for the cost function.
+    :param A, B: System dynamics matrices.
+    :param G, h: Inequality constraint matrices.
+    :param x_min, x_max: State constraints.
+    :param N: Prediction horizon.
+    :return: Optimal control input.
+    """
+# Number of states and controls
+    nx = A.shape[1]
+    nu = B.shape[1]
+
+    # Extended weight matrices
+    P_ext = np.kron(np.eye(N), P)
+    Q_ext = np.kron(np.eye(N), Q)
+    R_ext = np.kron(np.eye(N-1), R)
+
+    # Extended dynamics matrices
+    A_ext = np.zeros((N*nx, nx))
+    B_ext = np.zeros((N*nx, N*nu))
+    for i in range(N):
+        A_ext[i*nx:(i+1)*nx, :] = np.linalg.matrix_power(A, i+1)
+        for j in range(i+1):
+            B_ext[i*nx:(i+1)*nx, j*nu:(j+1)*nu] = np.linalg.matrix_power(A, i-j) @ B
+
+    # Cost function parameters
+    H = 2 * (B_ext.T @ P_ext @ B_ext + R_ext)
+    f = 2 * B_ext.T @ P_ext @ A_ext @ x_current
+
+    # Constraints
+    G_ext = np.kron(np.eye(N), G)
+    h_ext = np.tile(h, N)
+
+    # Solve QP problem
+    u = solve_qp(H, f, G_ext, h_ext)
+    return u[:nu]  # Return the first control input
+
+# Define system matrices
+A = np.array([[0.9835, 2.782, 0], [-0.0006821, 0.978, 0], [-0.0009730, 2.804, 1]])
+B = np.array([[0.01293], [0.00100], [0.001425]])
+
+# Define constraints
+G = np.array([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]])
+h = np.array([11.5, 11.5, 27, 24, 35, 35])  # degrees
+
+# Define state and control limits
+x_min, x_max = -np.array([11.5, 14, 35]), np.array([11.5, 14, 35])
+
+# Weight matrices
+P = np.eye(3)  # State weight
+Q = np.eye(3)  # State weight over horizon
+R = np.eye(1)  # Control weight
+
+# Prediction horizon
+N = 10
+
+# Current state
+x_current = np.array([0, 0, 0])  # Example state
+
+# Compute control input
+u_optimal = mpc_control(x_current, P, Q, R, A, B, G, h, x_min, x_max, N)
+
 
 ## Performance analysis.
 
