@@ -1,144 +1,87 @@
-# This is a model predictive controller for the pitch of an aircraft
 import numpy as np
-import qpsolvers as qp
-import polytope as pl
+from qpsolvers import solve_qp
 import matplotlib.pyplot as plt
-import scipy as sp
-import scipy.linalg as spla
-
-# Set system requirements.
-max_angle_of_attack = 11.5 # Degrees
-deflection_angle_range = [-24, 27]
-pitch_angle_max = 35
-pitch_angle_rate_max = 14
-slope_max = 23
-
-# Define the dynamical system
-# -----------------------------
-n = 2       # 2 states
-m = 1       # 1 input
-A = np.array([[0.9835, 2.782, 0], [-0.0006821, 0.978, 0], [-0.0009730, 2.804, 1]])
-B = np.array([[0.01293], [0.001], [0.001425]])
-N = 10
-
-
-## Formulate the MPC problem.
-
-# Define the objective function reflecting the goals of the controller.
-
-## Use QP solvers to solve optimisation problem.
-
-## Compute the maximal invariant set with polytope.
-# This set defines the safe operating region for the system.
-def next_polytope(poly_j, poly_kappa_f, a_closed_loop):
-    """
-    Function:
-        calculate the next polytope
-    Inputs:
-        poly_j        : the previous polytope
-        poly_kappa_f  : the initial poly kappa f
-        a_closed_loop : \dot{x}=Ax+B@Ku
-    Returns:
-        pc.Polytope(Hnext, bnext) : the next polytope
-    """
-    (Hj, bj) = (poly_j.A, poly_j.b)
-    (Hkf, bkf) = (poly_kappa_f.A, poly_kappa_f.b)
-    Hnext = np.vstack((Hkf, Hj @ a_closed_loop))
-    bnext = np.concatenate((bkf, bj))
-    return pc.Polytope(Hnext, bnext)
-
-
-def determine_maximal_invariant_set(poly_kappa_f, a_closed_loop):
-    """
-    Function:
-        determine the maximal invariant set
-    Inputs:
-        poly_kappa_f  : the initial poly kappa f
-        a_closed_loop : \dot{x}=Ax+B@Ku
-    Returns:
-        inv_next      : the maximal invariant set
-    """
-    
-    inv_prev = poly_kappa_f  # use the initial poly kappa f as the previous one before the loop
-    keep_running = True
-    while keep_running:  # loop to calculate the maximal set
-        inv_next = next_polytope(inv_prev, poly_kappa_f, a_closed_loop)  # calculate the next one
-        inv_next = pc.reduce(inv_next)
-        keep_running = inv_next >= inv_prev  # if next one >= previous one, continue
-        inv_prev = inv_next
-    return inv_next
-
-
-
-## Impliment and test controller.
-
-def mpc_control(x_current, P, Q, R, A, B, G, h, x_min, x_max, N):
-    """
-    MPC control algorithm.
-
-    :param x_current: Current state of the system.
-    :param P, Q, R: Weight matrices for the cost function.
-    :param A, B: System dynamics matrices.
-    :param G, h: Inequality constraint matrices.
-    :param x_min, x_max: State constraints.
-    :param N: Prediction horizon.
-    :return: Optimal control input.
-    """
-# Number of states and controls
-    nx = A.shape[1]
-    nu = B.shape[1]
-
-    # Extended weight matrices
-    P_ext = np.kron(np.eye(N), P)
-    Q_ext = np.kron(np.eye(N), Q)
-    R_ext = np.kron(np.eye(N-1), R)
-
-    # Extended dynamics matrices
-    A_ext = np.zeros((N*nx, nx))
-    B_ext = np.zeros((N*nx, N*nu))
-    for i in range(N):
-        A_ext[i*nx:(i+1)*nx, :] = np.linalg.matrix_power(A, i+1)
-        for j in range(i+1):
-            B_ext[i*nx:(i+1)*nx, j*nu:(j+1)*nu] = np.linalg.matrix_power(A, i-j) @ B
-
-    # Cost function parameters
-    H = 2 * (B_ext.T @ P_ext @ B_ext + R_ext)
-    f = 2 * B_ext.T @ P_ext @ A_ext @ x_current
-
-    # Constraints
-    G_ext = np.kron(np.eye(N), G)
-    h_ext = np.tile(h, N)
-
-    # Solve QP problem
-    u = solve_qp(H, f, G_ext, h_ext)
-    return u[:nu]  # Return the first control input
 
 # Define system matrices
 A = np.array([[0.9835, 2.782, 0], [-0.0006821, 0.978, 0], [-0.0009730, 2.804, 1]])
 B = np.array([[0.01293], [0.00100], [0.001425]])
 
-# Define constraints
-G = np.array([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]])
-h = np.array([11.5, 11.5, 27, 24, 35, 35])  # degrees
+# MPC parameters
+N = 10  # Prediction horizon
 
-# Define state and control limits
-x_min, x_max = -np.array([11.5, 14, 35]), np.array([11.5, 14, 35])
+# Constraints
+delta_min, delta_max = -24 * np.pi / 180, 27 * np.pi / 180  # Elevator deflection angle bounds in radians
 
-# Weight matrices
-P = np.eye(3)  # State weight
-Q = np.eye(3)  # State weight over horizon
-R = np.eye(1)  # Control weight
+# Initial state
+x0 = np.array([1.0, 0.5, -0.5])  # More significant deviation from the desired state
+Q = np.diag([10, 10, 10])  # Increase state error penalty
+R = np.diag([0.1])  # Decrease control effort penalty
 
-# Prediction horizon
-N = 10
+# Helper Functions
+def build_prediction_matrices(A, B, N):
+    n, m = A.shape[0], B.shape[1]
+    Px = np.zeros((N*n, n))
+    Pu = np.zeros((N*n, N*m))
+    for i in range(N):
+        Px[i*n:(i+1)*n, :] = np.linalg.matrix_power(A, i+1)
+        for j in range(i+1):
+            Pu[i*n:(i+1)*n, j*m:(j+1)*m] = np.linalg.matrix_power(A, i-j) @ B
+    return Px, Pu
 
-# Current state
-x_current = np.array([0, 0, 0])  # Example state
+def build_cost_matrices(Q, R, N, m, Px, Pu, x_ref):
+    Q_extended = np.kron(np.eye(N), Q)
+    R_extended = np.kron(np.eye(N), R)
+    H = Pu.T @ Q_extended @ Pu + R_extended
+    F = np.zeros(N * m)  # Assuming no linear term; adjust as needed
+    return H, F
 
-# Compute control input
-u_optimal = mpc_control(x_current, P, Q, R, A, B, G, h, x_min, x_max, N)
+def build_constraints_matrices(N, m, delta_min, delta_max):
+    G = np.vstack([np.eye(N*m), -np.eye(N*m)])
+    h = np.hstack([np.full(N*m, delta_max), np.full(N*m, -delta_min)])
+    return G, h
 
+def simulate_step(A, B, x, u):
+    return A @ x + B @ u
 
-## Performance analysis.
+def plot_results(x_history, u_history):
+    t = np.arange(len(x_history))
+    plt.figure(figsize=(12, 8))
+    plt.subplot(2, 1, 1)
+    plt.plot(t, x_history[:, 0], label='Angle of Attack')
+    plt.plot(t, x_history[:, 1], label='Pitch Rate')
+    plt.plot(t, x_history[:, 2], label='Pitch Angle')
+    plt.xlabel('Time Step')
+    plt.ylabel('State Value')
+    plt.title('State Trajectories')
+    plt.legend()
 
+    plt.subplot(2, 1, 2)
+    plt.step(t[:-1], u_history, where='post', label='Control Input')
+    plt.xlabel('Time Step')
+    plt.ylabel('Control Input')
+    plt.title('Control Input (Elevator Deflection Angle)')
+    plt.legend()
 
+    plt.tight_layout()
+    plt.show()
+
+# Main simulation loop
+def run_simulation():
+    n, m = A.shape[0], B.shape[1]
+    Px, Pu = build_prediction_matrices(A, B, N)
+    G, h = build_constraints_matrices(N, m, delta_min, delta_max)
+    x_history, u_history = [x0], []
+    
+    x = x0
+    for _ in range(50):  # Simulation time steps
+        H, F = build_cost_matrices(Q, R, N, m, Px, Pu, x)
+        U_opt = solve_qp(H, F, G, h, solver='ecos')
+        u = U_opt[0]  # First control input
+        u_history.append(u)
+        x = simulate_step(A, B, x, np.array([u]))
+        x_history.append(x)
+    
+    return np.array(x_history), np.array(u_history)
+
+x_history, u_history = run_simulation()
+plot_results(x_history, u_history)
