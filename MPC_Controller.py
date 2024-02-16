@@ -1,8 +1,9 @@
 import numpy as np
 from qpsolvers import solve_qp
 import matplotlib.pyplot as plt
+import polytope as pc
 
-# Define system matrices
+# System matrices
 A = np.array([[0.9835, 2.782, 0], [-0.0006821, 0.978, 0], [-0.0009730, 2.804, 1]])
 B = np.array([[0.01293], [0.00100], [0.001425]])
 
@@ -11,11 +12,16 @@ N = 10  # Prediction horizon
 
 # Constraints
 delta_min, delta_max = -24 * np.pi / 180, 27 * np.pi / 180  # Elevator deflection angle bounds in radians
+alpha_max = 11.5 * np.pi / 180  # Angle of attack bounds in radians
+theta_max = 35 * np.pi / 180  # Pitch angle bounds in radians
+q_max = 14 * np.pi / 180  # Pitch rate bounds in radians
 
 # Initial state
-x0 = np.array([1.0, 0.5, -0.5])  # More significant deviation from the desired state
-Q = np.diag([10, 10, 10])  # Increase state error penalty
-R = np.diag([0.1])  # Decrease control effort penalty
+x0 = np.array([1.0, 0.5, -0.5])
+
+# Cost function weights
+Q = np.diag([1000, 0, 0])  # State penalties
+R = np.array([[1]])  # Control effort penalty
 
 # Helper Functions
 def build_prediction_matrices(A, B, N):
@@ -35,10 +41,40 @@ def build_cost_matrices(Q, R, N, m, Px, Pu, x_ref):
     F = np.zeros(N * m)  # Assuming no linear term; adjust as needed
     return H, F
 
-def build_constraints_matrices(N, m, delta_min, delta_max):
-    G = np.vstack([np.eye(N*m), -np.eye(N*m)])
-    h = np.hstack([np.full(N*m, delta_max), np.full(N*m, -delta_min)])
+def build_constraints_matrices(N, m, delta_min, delta_max, alpha_max, q_max, theta_max):
+    # Control input constraints
+    G_delta = np.vstack([np.eye(N*m), -np.eye(N*m)])
+    h_delta = np.hstack([np.full(N*m, delta_max), np.full(N*m, -delta_min)])
+    
+    # State constraints (angle of attack, pitch rate, and pitch angle)
+    # Note: Simplified for demonstration. In practice, state constraints need to be integrated based on system dynamics.
+    G_state = np.zeros((0, N*m))  # Placeholder for state constraints
+    h_state = np.array([])  # Placeholder for state constraint values
+    
+    G = np.vstack([G_delta, G_state])
+    h = np.hstack([h_delta, h_state])
+    
     return G, h
+
+def compute_maximal_invariant_set(A, B, state_constraints, input_constraints, tol=1e-4, max_iter=100):
+    """
+    Compute the maximal invariant set for a given linear system and constraints.
+    
+    A, B: System matrices defining the dynamics x' = Ax + Bu.
+    state_constraints: A Polytope object defining the state constraints.
+    input_constraints: A Polytope object defining the input constraints.
+    tol: Tolerance for checking set containment.
+    max_iter: Maximum number of iterations for the algorithm.
+    """
+    # Initial set is the state constraint set
+    Omega = state_constraints
+    for _ in range(max_iter):
+        pre_Omega = pc.pre(Omega, A, B, U=input_constraints, W=None)
+        new_Omega = pc.intersect(Omega, pre_Omega)
+        if pc.is_empty(new_Omega - Omega, tol):
+            break
+        Omega = new_Omega
+    return Omega
 
 def simulate_step(A, B, x, u):
     return A @ x + B @ u
@@ -65,11 +101,10 @@ def plot_results(x_history, u_history):
     plt.tight_layout()
     plt.show()
 
-# Main simulation loop
 def run_simulation():
     n, m = A.shape[0], B.shape[1]
     Px, Pu = build_prediction_matrices(A, B, N)
-    G, h = build_constraints_matrices(N, m, delta_min, delta_max)
+    G, h = build_constraints_matrices(N, m, delta_min, delta_max, alpha_max, q_max, theta_max)
     x_history, u_history = [x0], []
     
     x = x0
